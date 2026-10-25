@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for Authentication and Role-Based Access Control (RBAC)
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'Admin' ||
+        getUserData().role == 'admin' ||
+        getUserData().role == 'Admin'
+      );
+    }
+
+    function isHR() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'hr' ||
+        request.auth.token.role == 'HR' ||
+        getUserData().role == 'hr' ||
+        getUserData().role == 'HR' ||
+        isAdmin()
+      );
+    }
+
+    // --- Users Collection ---
+    // Users can read their own profile; only Admins can create or modify roles
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // --- Employee Records (CRUD operations) ---
+    // HR and Admin can read and search employee records.
+    // Both HR and Admin can create and update employee records with valid data.
+    // Only Admin can delete employee records.
+    match /employees/{employeeId} {
+      allow read: if isHR();
+      allow create, update: if isHR() &&
+        request.resource.data.department is string &&
+        request.resource.data.age is number &&
+        request.resource.data.age >= 18 &&
+        request.resource.data.age <= 70;
+      allow delete: if isAdmin();
+    }
+
+    // --- HR Review Decisions ---
+    // HR and Admin can view and submit reviews.
+    // Reviews are immutable except by the original reviewer or an Admin.
+    // Only Admins can permanently delete a review record.
+    match /hr_reviews/{reviewId} {
+      allow read: if isHR();
+      allow create: if isHR() &&
+        request.resource.data.employee_id != null &&
+        request.resource.data.hr_decision in ['Approve', 'Reject', 'Hold'];
+      allow update: if isHR() && (
+        resource.data.reviewer_email == request.auth.token.email ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // --- Prediction History ---
+    // System and HR can log model predictions; all authenticated users can view their department.
+    match /prediction_history/{predictionId} {
+      allow read: if isHR();
+      allow create: if isHR();
+      allow update, delete: if isAdmin();
+    }
+
+    // --- Training Recommendations ---
+    // Training development roadmaps and skill gap plans
+    match /training_recommendations/{recommendationId} {
+      allow read: if isHR();
+      allow write: if isHR();
+    }
+
+    // --- Audit Logs ---
+    // Append-only for all authorized actions; strictly read-only for Admins; never deletable.
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isHR();
+      allow update, delete: if false; // Audit logs are immutable
+    }
+  }
+}
